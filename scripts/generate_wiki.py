@@ -1,0 +1,839 @@
+#!/usr/bin/env python3
+"""
+Hytale Packet Documentation Generator
+
+Parses decompiled Java packet files using regex and generates Markdown
+documentation for GitHub Wiki pages organized by version and category.
+"""
+
+import re
+import json
+import argparse
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional
+from collections import defaultdict
+
+
+@dataclass
+class EnumValue:
+    """Represents an enum constant."""
+    name: str
+    value: int
+
+
+@dataclass
+class EnumInfo:
+    """Represents a Java enum type."""
+    name: str
+    package: str
+    category: str
+    values: list[EnumValue] = field(default_factory=list)
+
+
+@dataclass
+class FieldInfo:
+    """Represents a packet field."""
+    name: str
+    java_type: str
+    nullable: bool = False
+    default_value: Optional[str] = None
+    max_length: Optional[int] = None
+
+    @property
+    def wire_type(self) -> str:
+        """Convert Java type to wire protocol type."""
+        type_map = {
+            'byte': 'i8',
+            'short': 'i16',
+            'int': 'i32',
+            'long': 'i64',
+            'float': 'f32',
+            'double': 'f64',
+            'boolean': 'bool',
+            'String': 'string',
+            'UUID': 'uuid',
+            'byte[]': 'bytes[]',
+            'int[]': 'i32[]',
+            'long[]': 'i64[]',
+            'float[]': 'f32[]',
+            'double[]': 'f64[]',
+        }
+        base_type = self.java_type.replace('[]', '')
+        is_array = '[]' in self.java_type
+
+        if self.java_type in type_map:
+            return type_map[self.java_type]
+        elif base_type in type_map and is_array:
+            return type_map[base_type] + '[]'
+        else:
+            return self.java_type
+
+
+@dataclass
+class PacketInfo:
+    """Represents a parsed packet class."""
+    name: str
+    package: str
+    category: str
+    packet_id: Optional[int] = None
+    is_compressed: bool = False
+    nullable_bit_field_size: int = 0
+    fixed_block_size: int = 0
+    variable_field_count: int = 0
+    variable_block_start: int = 0
+    max_size: int = 0
+    fields: list[FieldInfo] = field(default_factory=list)
+    imports: list[str] = field(default_factory=list)
+    is_enum: bool = False
+    is_data_class: bool = False
+
+    @property
+    def packet_id_hex(self) -> str:
+        """Return packet ID as hex string."""
+        if self.packet_id is not None:
+            return f"0x{self.packet_id:02X}"
+        return "N/A"
+
+
+class JavaPacketParser:
+    """Parses Java packet source files using regex patterns."""
+
+    # Regex patterns for parsing
+    PACKAGE_PATTERN = re.compile(r'package\s+([\w.]+);')
+    IMPORT_PATTERN = re.compile(r'import\s+([\w.]+);')
+    CLASS_PATTERN = re.compile(r'public\s+class\s+(\w+)\s+implements\s+Packet')
+    ENUM_PATTERN = re.compile(r'public\s+enum\s+(\w+)\s*\{')
+    ENUM_VALUE_PATTERN = re.compile(r'(\w+)\s*\(\s*(\d+)\s*\)')
+    DATA_CLASS_PATTERN = re.compile(r'public\s+class\s+(\w+)\s*(?:extends\s+\w+\s*)?\{')
+
+    # Static constants regex
+    PACKET_ID_PATTERN = re.compile(r'public\s+static\s+final\s+int\s+PACKET_ID\s*=\s*(\d+);')
+    IS_COMPRESSED_PATTERN = re.compile(r'public\s+static\s+final\s+boolean\s+IS_COMPRESSED\s*=\s*(true|false);')
+    NULLABLE_BIT_FIELD_PATTERN = re.compile(r'public\s+static\s+final\s+int\s+NULLABLE_BIT_FIELD_SIZE\s*=\s*(\d+);')
+    FIXED_BLOCK_SIZE_PATTERN = re.compile(r'public\s+static\s+final\s+int\s+FIXED_BLOCK_SIZE\s*=\s*(\d+);')
+    VARIABLE_FIELD_COUNT_PATTERN = re.compile(r'public\s+static\s+final\s+int\s+VARIABLE_FIELD_COUNT\s*=\s*(\d+);')
+    VARIABLE_BLOCK_START_PATTERN = re.compile(r'public\s+static\s+final\s+int\s+VARIABLE_BLOCK_START\s*=\s*(\d+);')
+    MAX_SIZE_PATTERN = re.compile(r'public\s+static\s+final\s+int\s+MAX_SIZE\s*=\s*(\d+);')
+
+    # Field patterns
+    FIELD_PATTERN = re.compile(
+        r'(@Nullable\s+|@Nonnull\s+)?public\s+(?!static)(\w+(?:<[\w<>, ]+>)?(?:\[\])?)\s+(\w+)(?:\s*=\s*([^;]+))?;'
+    )
+
+    # Max length patterns from validation code
+    STRING_MAX_LENGTH_PATTERN = re.compile(r'stringTooLong\s*\(\s*"(\w+)"\s*,\s*\w+\s*,\s*(\d+)\s*\)')
+    ARRAY_MAX_LENGTH_PATTERN = re.compile(r'arrayTooLong\s*\(\s*"(\w+)"\s*,\s*\w+\s*,\s*(\d+)\s*\)')
+
+    def __init__(self, packets_dir: Path):
+        self.packets_dir = packets_dir
+        self.enums: dict[str, EnumInfo] = {}
+        self.packets: dict[str, PacketInfo] = {}
+        self.data_classes: dict[str, PacketInfo] = {}
+
+    def parse_all(self) -> tuple[dict[str, list[PacketInfo]], dict[str, EnumInfo], dict[str, PacketInfo]]:
+        """Parse all Java files and return categorized results."""
+        packets_by_category: dict[str, list[PacketInfo]] = defaultdict(list)
+
+        for category_dir in self.packets_dir.iterdir():
+            if not category_dir.is_dir():
+                continue
+
+            category = category_dir.name
+
+            for java_file in category_dir.glob('*.java'):
+                result = self.parse_file(java_file, category)
+                if result:
+                    if result.is_enum:
+                        enum_info = self._extract_enum_info(result, java_file)
+                        self.enums[result.name] = enum_info
+                    elif result.packet_id is not None:
+                        packets_by_category[category].append(result)
+                        self.packets[result.name] = result
+                    else:
+                        self.data_classes[result.name] = result
+
+        # Sort packets by ID within each category
+        for category in packets_by_category:
+            packets_by_category[category].sort(key=lambda p: p.packet_id or 0)
+
+        return dict(packets_by_category), self.enums, self.data_classes
+
+    def _extract_enum_info(self, packet_info: PacketInfo, java_file: Path) -> EnumInfo:
+        """Extract enum values from an enum file."""
+        content = java_file.read_text(encoding='utf-8')
+        enum_info = EnumInfo(
+            name=packet_info.name,
+            package=packet_info.package,
+            category=packet_info.category
+        )
+
+        # Find enum body
+        enum_match = self.ENUM_PATTERN.search(content)
+        if enum_match:
+            start = enum_match.end()
+            enum_body_end = content.find(';', start)
+            if enum_body_end != -1:
+                enum_body = content[start:enum_body_end]
+                for match in self.ENUM_VALUE_PATTERN.finditer(enum_body):
+                    enum_info.values.append(EnumValue(
+                        name=match.group(1),
+                        value=int(match.group(2))
+                    ))
+
+        return enum_info
+
+    def parse_file(self, file_path: Path, category: str) -> Optional[PacketInfo]:
+        """Parse a single Java file using regex."""
+        try:
+            content = file_path.read_text(encoding='utf-8')
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+            return None
+
+        # Check if it's an enum
+        enum_match = self.ENUM_PATTERN.search(content)
+        if enum_match:
+            package_match = self.PACKAGE_PATTERN.search(content)
+            return PacketInfo(
+                name=enum_match.group(1),
+                package=package_match.group(1) if package_match else '',
+                category=category,
+                is_enum=True
+            )
+
+        # Check if it's a packet class
+        class_match = self.CLASS_PATTERN.search(content)
+        if class_match:
+            packet = PacketInfo(
+                name=class_match.group(1),
+                package='',
+                category=category
+            )
+        else:
+            # Check for data class
+            data_class_match = self.DATA_CLASS_PATTERN.search(content)
+            if data_class_match:
+                packet = PacketInfo(
+                    name=data_class_match.group(1),
+                    package='',
+                    category=category,
+                    is_data_class=True
+                )
+            else:
+                return None
+
+        # Extract package
+        package_match = self.PACKAGE_PATTERN.search(content)
+        if package_match:
+            packet.package = package_match.group(1)
+
+        # Extract imports
+        for match in self.IMPORT_PATTERN.finditer(content):
+            packet.imports.append(match.group(1))
+
+        # Extract static constants
+        self._extract_constants(content, packet)
+
+        # Extract fields
+        self._extract_fields(content, packet)
+
+        # Extract max lengths from validation code
+        self._extract_max_lengths(content, packet)
+
+        return packet
+
+    def _extract_constants(self, content: str, packet: PacketInfo):
+        """Extract static constant values."""
+        if match := self.PACKET_ID_PATTERN.search(content):
+            packet.packet_id = int(match.group(1))
+
+        if match := self.IS_COMPRESSED_PATTERN.search(content):
+            packet.is_compressed = match.group(1) == 'true'
+
+        if match := self.NULLABLE_BIT_FIELD_PATTERN.search(content):
+            packet.nullable_bit_field_size = int(match.group(1))
+
+        if match := self.FIXED_BLOCK_SIZE_PATTERN.search(content):
+            packet.fixed_block_size = int(match.group(1))
+
+        if match := self.VARIABLE_FIELD_COUNT_PATTERN.search(content):
+            packet.variable_field_count = int(match.group(1))
+
+        if match := self.VARIABLE_BLOCK_START_PATTERN.search(content):
+            packet.variable_block_start = int(match.group(1))
+
+        if match := self.MAX_SIZE_PATTERN.search(content):
+            packet.max_size = int(match.group(1))
+
+    def _extract_fields(self, content: str, packet: PacketInfo):
+        """Extract field declarations."""
+        for match in self.FIELD_PATTERN.finditer(content):
+            annotation = match.group(1)
+            java_type = match.group(2)
+            name = match.group(3)
+            default_value = match.group(4)
+
+            # Skip static fields and common non-data fields
+            if name in ('VALUES', 'value'):
+                continue
+
+            fld = FieldInfo(
+                name=name,
+                java_type=java_type,
+                nullable=annotation and '@Nullable' in annotation,
+                default_value=default_value.strip() if default_value else None
+            )
+            packet.fields.append(fld)
+
+    def _extract_max_lengths(self, content: str, packet: PacketInfo):
+        """Extract max lengths from validation/exception code."""
+        field_by_name = {f.name.lower(): f for f in packet.fields}
+
+        for match in self.STRING_MAX_LENGTH_PATTERN.finditer(content):
+            field_name = match.group(1).lower()
+            max_len = int(match.group(2))
+            if field_name in field_by_name:
+                field_by_name[field_name].max_length = max_len
+
+        for match in self.ARRAY_MAX_LENGTH_PATTERN.finditer(content):
+            field_name = match.group(1).lower()
+            max_len = int(match.group(2))
+            if field_name in field_by_name:
+                field_by_name[field_name].max_length = max_len
+
+
+class WikiGenerator:
+    """Generates Markdown wiki documentation organized by version/category."""
+
+    def __init__(self, output_dir: Path, version: str):
+        self.output_dir = output_dir
+        self.version = version
+        self.version_dir = output_dir / "versions" / version
+        self.version_dir.mkdir(parents=True, exist_ok=True)
+
+    def generate(
+        self,
+        packets_by_category: dict[str, list[PacketInfo]],
+        enums: dict[str, EnumInfo],
+        data_classes: dict[str, PacketInfo]
+    ):
+        """Generate all wiki pages."""
+        # Generate version home page
+        self._generate_version_home(packets_by_category, enums)
+
+        # Generate category pages with packets
+        for category, packets in packets_by_category.items():
+            self._generate_category_page(category, packets, enums, data_classes)
+
+        # Generate enums page for this version
+        self._generate_enums_page(enums)
+
+        # Generate data types page for this version
+        self._generate_data_types_page(data_classes)
+
+        # Generate sidebar for this version
+        self._generate_version_sidebar(packets_by_category)
+
+        # Generate root home page (versions index)
+        self._generate_root_home()
+
+        # Generate root sidebar
+        self._generate_root_sidebar()
+
+    def _generate_version_home(
+        self,
+        packets_by_category: dict[str, list[PacketInfo]],
+        enums: dict[str, EnumInfo]
+    ):
+        """Generate the version home page."""
+        total_packets = sum(len(p) for p in packets_by_category.values())
+
+        lines = [
+            f"# Hytale Protocol - Version {self.version}",
+            f"",
+            f"This documentation describes the network packets for version `{self.version}`.",
+            f"",
+            f"## Overview",
+            f"",
+            f"| Metric | Count |",
+            f"|--------|-------|",
+            f"| Total Packets | {total_packets} |",
+            f"| Categories | {len(packets_by_category)} |",
+            f"| Enum Types | {len(enums)} |",
+            f"",
+            f"## Categories",
+            f"",
+        ]
+
+        category_descriptions = {
+            'auth': 'Authentication and authorization',
+            'connection': 'Connection management (connect, disconnect, ping)',
+            'entities': 'Entity updates and synchronization',
+            'interaction': 'Player-entity interactions',
+            'inventory': 'Inventory management',
+            'player': 'Player state and movement',
+            'world': 'World state and chunk data',
+            'worldmap': 'World map information',
+            'asseteditor': 'Asset editor functionality',
+            'assets': 'Asset management and updates',
+            'buildertools': 'Builder mode tools',
+            'camera': 'Camera control',
+            'interface_': 'UI interface packets',
+            'machinima': 'Machinima/cinematics',
+            'serveraccess': 'Server access control',
+            'setup': 'Initial setup packets',
+            'window': 'Window/GUI management',
+        }
+
+        for category in sorted(packets_by_category.keys()):
+            packets = packets_by_category[category]
+            desc = category_descriptions.get(category, '')
+            display_name = category.replace('_', '').title()
+            lines.append(f"- [{display_name}]({category}) ({len(packets)} packets) - {desc}")
+
+        lines.extend([
+            f"",
+            f"## Reference",
+            f"",
+            f"- [Enum Types](Enums)",
+            f"- [Data Types](Data-Types)",
+            f"",
+            f"---",
+            f"[All Versions](../Home)",
+        ])
+
+        self._write_page("Home", lines)
+
+    def _generate_category_page(
+        self,
+        category: str,
+        packets: list[PacketInfo],
+        enums: dict[str, EnumInfo],
+        data_classes: dict[str, PacketInfo]
+    ):
+        """Generate a category page with all packets inline."""
+        display_name = category.replace('_', '').title()
+
+        lines = [
+            f"# {display_name} Packets",
+            f"",
+            f"**Version:** {self.version}",
+            f"",
+            f"This category contains {len(packets)} packet(s).",
+            f"",
+            f"## Packet Index",
+            f"",
+            f"| ID | Name | Compressed | Max Size |",
+            f"|----|------|------------|----------|",
+        ]
+
+        for packet in packets:
+            compressed = "Yes" if packet.is_compressed else "No"
+            max_size = self._format_size(packet.max_size)
+            lines.append(
+                f"| `{packet.packet_id_hex}` | [{packet.name}](#{packet.name.lower()}) | {compressed} | {max_size} |"
+            )
+
+        lines.append("")
+
+        # Add each packet's detailed documentation
+        for packet in packets:
+            lines.extend(self._generate_packet_section(packet, enums, data_classes))
+
+        lines.extend([
+            f"---",
+            f"[Back to Home](Home)",
+        ])
+
+        self._write_page(category, lines)
+
+    def _generate_packet_section(
+        self,
+        packet: PacketInfo,
+        enums: dict[str, EnumInfo],
+        data_classes: dict[str, PacketInfo]
+    ) -> list[str]:
+        """Generate documentation section for a single packet."""
+        lines = [
+            f"---",
+            f"",
+            f"## {packet.name}",
+            f"",
+            f"| Property | Value |",
+            f"|----------|-------|",
+            f"| Packet ID | `{packet.packet_id_hex}` ({packet.packet_id}) |",
+            f"| Compressed | {'Yes' if packet.is_compressed else 'No'} |",
+            f"| Fixed Block Size | {packet.fixed_block_size} bytes |",
+            f"| Variable Field Count | {packet.variable_field_count} |",
+            f"| Max Size | {self._format_size(packet.max_size)} |",
+        ]
+
+        if packet.nullable_bit_field_size > 0:
+            lines.append(f"| Nullable Bit Field | {packet.nullable_bit_field_size} byte(s) |")
+
+        if packet.fields:
+            lines.extend([
+                f"",
+                f"### Fields",
+                f"",
+                f"| Name | Type | Nullable | Max Length |",
+                f"|------|------|----------|------------|",
+            ])
+
+            for fld in packet.fields:
+                nullable = "Yes" if fld.nullable else "No"
+                max_len = str(fld.max_length) if fld.max_length else "-"
+                type_str = self._format_type_link(fld.java_type, enums, data_classes)
+                lines.append(f"| `{fld.name}` | {type_str} | {nullable} | {max_len} |")
+
+        # Add enum details inline
+        for fld in packet.fields:
+            base_type = fld.java_type.replace('[]', '')
+            if base_type in enums:
+                enum = enums[base_type]
+                if enum.values:
+                    lines.extend([
+                        f"",
+                        f"**{fld.name}** enum values:",
+                        f"",
+                    ])
+                    for ev in enum.values:
+                        lines.append(f"- `{ev.value}` = {ev.name}")
+
+        lines.append("")
+        return lines
+
+    def _generate_enums_page(self, enums: dict[str, EnumInfo]):
+        """Generate the enums documentation page."""
+        lines = [
+            f"# Enum Types",
+            f"",
+            f"**Version:** {self.version}",
+            f"",
+            f"This page documents all enum types used in the protocol.",
+            f"",
+        ]
+
+        # Group enums by category
+        enums_by_category: dict[str, list[EnumInfo]] = defaultdict(list)
+        for enum in enums.values():
+            enums_by_category[enum.category].append(enum)
+
+        for category in sorted(enums_by_category.keys()):
+            category_enums = sorted(enums_by_category[category], key=lambda e: e.name)
+            display_category = category.replace('_', '').title()
+            lines.extend([
+                f"## {display_category}",
+                f"",
+            ])
+
+            for enum in category_enums:
+                lines.extend([
+                    f"### {enum.name}",
+                    f"",
+                ])
+                if enum.values:
+                    lines.extend([
+                        f"| Value | Name |",
+                        f"|-------|------|",
+                    ])
+                    for ev in enum.values:
+                        lines.append(f"| {ev.value} | `{ev.name}` |")
+                else:
+                    lines.append("*No values extracted*")
+                lines.append("")
+
+        lines.extend([
+            f"---",
+            f"[Back to Home](Home)",
+        ])
+
+        self._write_page("Enums", lines)
+
+    def _generate_data_types_page(self, data_classes: dict[str, PacketInfo]):
+        """Generate the data types documentation page."""
+        lines = [
+            f"# Data Types",
+            f"",
+            f"**Version:** {self.version}",
+            f"",
+            f"This page documents composite data types used in packets.",
+            f"",
+        ]
+
+        # Group by category
+        types_by_category: dict[str, list[PacketInfo]] = defaultdict(list)
+        for dc in data_classes.values():
+            types_by_category[dc.category].append(dc)
+
+        for category in sorted(types_by_category.keys()):
+            category_types = sorted(types_by_category[category], key=lambda t: t.name)
+            display_category = category.replace('_', '').title()
+            lines.extend([
+                f"## {display_category}",
+                f"",
+            ])
+
+            for dc in category_types:
+                lines.extend([
+                    f"### {dc.name}",
+                    f"",
+                ])
+
+                if dc.fields:
+                    lines.extend([
+                        f"| Field | Type | Nullable |",
+                        f"|-------|------|----------|",
+                    ])
+                    for fld in dc.fields:
+                        nullable = "Yes" if fld.nullable else "No"
+                        lines.append(f"| `{fld.name}` | `{fld.java_type}` | {nullable} |")
+                else:
+                    lines.append("*No fields documented*")
+
+                lines.append("")
+
+        lines.extend([
+            f"---",
+            f"[Back to Home](Home)",
+        ])
+
+        self._write_page("Data-Types", lines)
+
+    def _generate_version_sidebar(self, packets_by_category: dict[str, list[PacketInfo]]):
+        """Generate the sidebar for this version."""
+        lines = [
+            f"**Version {self.version}**",
+            f"",
+            f"[Home](Home)",
+            f"",
+            f"**Categories**",
+        ]
+
+        for category in sorted(packets_by_category.keys()):
+            display_name = category.replace('_', '').title()
+            lines.append(f"- [{display_name}]({category})")
+
+        lines.extend([
+            f"",
+            f"**Reference**",
+            f"- [Enums](Enums)",
+            f"- [Data Types](Data-Types)",
+            f"",
+            f"---",
+            f"[All Versions](../Home)",
+        ])
+
+        self._write_page("_Sidebar", lines)
+
+    def _generate_root_home(self):
+        """Generate the root home page with versions list."""
+        versions_dir = self.output_dir / "versions"
+        versions = []
+
+        if versions_dir.exists():
+            for version_path in sorted(versions_dir.iterdir(), reverse=True):
+                if version_path.is_dir():
+                    versions.append(version_path.name)
+
+        lines = [
+            f"# Hytale Protocol Documentation",
+            f"",
+            f"Welcome to the Hytale network protocol documentation.",
+            f"",
+            f"## Available Versions",
+            f"",
+        ]
+
+        if versions:
+            for ver in versions:
+                lines.append(f"- [{ver}](versions/{ver}/Home)")
+        else:
+            lines.append("*No versions documented yet*")
+
+        lines.extend([
+            f"",
+            f"---",
+            f"*Documentation generated from decompiled packet sources.*",
+        ])
+
+        root_home = self.output_dir / "Home.md"
+        root_home.write_text('\n'.join(lines), encoding='utf-8')
+        print(f"Generated: Home.md (root)")
+
+    def _generate_root_sidebar(self):
+        """Generate the root sidebar."""
+        versions_dir = self.output_dir / "versions"
+        versions = []
+
+        if versions_dir.exists():
+            for version_path in sorted(versions_dir.iterdir(), reverse=True):
+                if version_path.is_dir():
+                    versions.append(version_path.name)
+
+        lines = [
+            f"**[Home](Home)**",
+            f"",
+            f"**Versions**",
+        ]
+
+        for ver in versions[:10]:  # Show latest 10
+            lines.append(f"- [{ver}](versions/{ver}/Home)")
+
+        if len(versions) > 10:
+            lines.append(f"- *...and {len(versions) - 10} more*")
+
+        root_sidebar = self.output_dir / "_Sidebar.md"
+        root_sidebar.write_text('\n'.join(lines), encoding='utf-8')
+        print(f"Generated: _Sidebar.md (root)")
+
+    def _write_page(self, name: str, lines: list[str]):
+        """Write a wiki page to the version directory."""
+        file_path = self.version_dir / f"{name}.md"
+        content = '\n'.join(lines)
+        file_path.write_text(content, encoding='utf-8')
+        print(f"Generated: versions/{self.version}/{name}.md")
+
+    def _format_size(self, size: int) -> str:
+        """Format byte size for display."""
+        if size >= 1_000_000_000:
+            return f"{size / 1_000_000_000:.1f} GB"
+        elif size >= 1_000_000:
+            return f"{size / 1_000_000:.1f} MB"
+        elif size >= 1_000:
+            return f"{size / 1_000:.1f} KB"
+        else:
+            return f"{size} bytes"
+
+    def _format_type_link(
+        self,
+        java_type: str,
+        enums: dict[str, EnumInfo],
+        data_classes: dict[str, PacketInfo]
+    ) -> str:
+        """Format a type with links to enum/data class documentation."""
+        base_type = java_type.replace('[]', '')
+        is_array = '[]' in java_type
+        suffix = '[]' if is_array else ''
+
+        if base_type in enums:
+            return f"[{base_type}](Enums#{base_type.lower()}){suffix}"
+        elif base_type in data_classes:
+            return f"[{base_type}](Data-Types#{base_type.lower()}){suffix}"
+        else:
+            return f"`{java_type}`"
+
+
+def generate_json_summary(
+    packets_by_category: dict[str, list[PacketInfo]],
+    enums: dict[str, EnumInfo],
+    output_path: Path,
+    version: str
+):
+    """Generate a JSON summary of all packets."""
+    summary = {
+        'version': version,
+        'categories': {},
+        'enums': {}
+    }
+
+    for category, packets in packets_by_category.items():
+        summary['categories'][category] = {
+            'packet_count': len(packets),
+            'packets': [
+                {
+                    'name': p.name,
+                    'id': p.packet_id,
+                    'id_hex': p.packet_id_hex,
+                    'compressed': p.is_compressed,
+                    'max_size': p.max_size,
+                    'field_count': len(p.fields),
+                    'fields': [
+                        {
+                            'name': f.name,
+                            'type': f.java_type,
+                            'nullable': f.nullable,
+                            'max_length': f.max_length
+                        }
+                        for f in p.fields
+                    ]
+                }
+                for p in packets
+            ]
+        }
+
+    for name, enum in enums.items():
+        summary['enums'][name] = {
+            'category': enum.category,
+            'values': [{'name': v.name, 'value': v.value} for v in enum.values]
+        }
+
+    output_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
+    print(f"Generated: {output_path.name}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generate wiki documentation from Hytale packet Java files'
+    )
+    parser.add_argument(
+        '--packets-dir',
+        type=Path,
+        default=Path('./packets'),
+        help='Directory containing packet Java files'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=Path('./wiki'),
+        help='Output directory for wiki pages'
+    )
+    parser.add_argument(
+        '--version',
+        type=str,
+        default='unknown',
+        help='Version string for documentation'
+    )
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='Also generate JSON summary'
+    )
+
+    args = parser.parse_args()
+
+    if not args.packets_dir.exists():
+        print(f"Error: Packets directory not found: {args.packets_dir}")
+        return 1
+
+    print(f"Parsing packets from: {args.packets_dir}")
+    print(f"Output directory: {args.output_dir}")
+    print(f"Version: {args.version}")
+    print()
+
+    # Parse all Java files
+    java_parser = JavaPacketParser(args.packets_dir)
+    packets_by_category, enums, data_classes = java_parser.parse_all()
+
+    total_packets = sum(len(p) for p in packets_by_category.values())
+    print(f"\nFound {total_packets} packets in {len(packets_by_category)} categories")
+    print(f"Found {len(enums)} enum types")
+    print(f"Found {len(data_classes)} data classes")
+    print()
+
+    # Generate wiki pages
+    generator = WikiGenerator(args.output_dir, args.version)
+    generator.generate(packets_by_category, enums, data_classes)
+
+    # Generate JSON if requested
+    if args.json:
+        json_path = generator.version_dir / 'packets.json'
+        generate_json_summary(packets_by_category, enums, json_path, args.version)
+
+    print(f"\nWiki generation complete!")
+    return 0
+
+
+if __name__ == '__main__':
+    exit(main())

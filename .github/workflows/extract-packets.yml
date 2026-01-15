@@ -15,6 +15,11 @@ on:
         description: 'Run ID of the workflow that uploaded the JAR artifact (optional)'
         required: false
         type: string
+      generate_wiki:
+        description: 'Generate wiki documentation'
+        required: false
+        type: boolean
+        default: true
 
 env:
   VINEFLOWER_VERSION: '1.10.1'
@@ -103,6 +108,30 @@ jobs:
             "has_changes=false" >> $env:GITHUB_OUTPUT
           }
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate wiki documentation
+        if: inputs.generate_wiki
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          Write-Host "Generating wiki documentation for version: $version"
+
+          # Create wiki directory
+          New-Item -ItemType Directory -Path "./wiki" -Force | Out-Null
+
+          # Run the wiki generator
+          python ./scripts/generate_wiki.py `
+            --packets-dir "./packets" `
+            --output-dir "./wiki" `
+            --version "$version" `
+            --json
+
+          Write-Host "Wiki generation complete"
+
       - name: Create version branch and commit
         if: steps.changes.outputs.has_changes == 'true'
         shell: pwsh
@@ -135,11 +164,92 @@ jobs:
 
           Write-Host "::notice::Successfully pushed to branch: $branchName"
 
+      - name: Publish wiki to GitHub Wiki
+        if: inputs.generate_wiki
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ inputs.version }}"
+          repo="${{ github.repository }}"
+          wiki_url="https://github.com/${repo}.wiki.git"
+
+          echo "Publishing wiki for version: $version"
+
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Clone existing wiki or create new one
+          mkdir -p wiki-repo
+          cd wiki-repo
+
+          if git clone "https://x-access-token:${GH_TOKEN}@github.com/${repo}.wiki.git" . 2>/dev/null; then
+            echo "Cloned existing wiki"
+          else
+            echo "Wiki doesn't exist yet, initializing..."
+            git init
+            git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${repo}.wiki.git"
+          fi
+
+          # Create version directory structure
+          version_dir="versions/${version}"
+          mkdir -p "$version_dir"
+
+          # Copy wiki files to version directory
+          cp -r ../wiki/* "$version_dir/"
+
+          # Also copy to root for latest version (overwrite existing)
+          cp -r ../wiki/* ./
+
+          # Create a versions index page
+          cat > "Versions.md" << 'EOF'
+          # Protocol Versions
+
+          This wiki contains documentation for multiple versions of the Hytale protocol.
+
+          ## Available Versions
+
+          EOF
+
+          # List all version directories
+          if [ -d "versions" ]; then
+            for dir in versions/*/; do
+              if [ -d "$dir" ]; then
+                ver=$(basename "$dir")
+                echo "- [${ver}](versions/${ver}/Home)" >> "Versions.md"
+              fi
+            done
+          fi
+
+          echo "" >> "Versions.md"
+          echo "---" >> "Versions.md"
+          echo "*The root wiki pages always reflect the latest version.*" >> "Versions.md"
+
+          # Update sidebar to include versions link
+          if [ -f "_Sidebar.md" ]; then
+            if ! grep -q "Versions" "_Sidebar.md"; then
+              echo "" >> "_Sidebar.md"
+              echo "**[All Versions](Versions)**" >> "_Sidebar.md"
+            fi
+          fi
+
+          # Commit and push
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No wiki changes to commit"
+          else
+            git commit -m "Update wiki documentation for version ${version}"
+            git push origin HEAD:master --force
+            echo "Wiki published successfully!"
+          fi
+
       - name: Create summary
         shell: pwsh
         run: |
           $packetDirs = Get-ChildItem -Path "./packets" -Directory -ErrorAction SilentlyContinue
           $totalFiles = (Get-ChildItem -Path "./packets" -Filter "*.java" -Recurse -ErrorAction SilentlyContinue).Count
+          $wikiFiles = (Get-ChildItem -Path "./wiki" -Filter "*.md" -ErrorAction SilentlyContinue).Count
 
           $summary = @"
           ## Packet Extraction Summary
@@ -147,6 +257,7 @@ jobs:
           **Version:** ``${{ inputs.version }}``
           **Branch:** ``version/${{ inputs.version }}``
           **Total Java Files:** $totalFiles
+          **Wiki Pages Generated:** $wikiFiles
 
           ### Package Breakdown
 
@@ -157,6 +268,12 @@ jobs:
           foreach ($dir in $packetDirs) {
             $count = (Get-ChildItem -Path $dir.FullName -Filter "*.java" -Recurse).Count
             $summary += "`n| ``$($dir.Name)`` | $count |"
+          }
+
+          if ($wikiFiles -gt 0) {
+            $summary += "`n`n### Wiki Documentation`n`nWiki documentation has been published to the [repository wiki](https://github.com/${{ github.repository }}/wiki)."
+            $summary += "`n- [Home](https://github.com/${{ github.repository }}/wiki)"
+            $summary += "`n- [All Versions](https://github.com/${{ github.repository }}/wiki/Versions)"
           }
 
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
