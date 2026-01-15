@@ -309,8 +309,7 @@ class WikiGenerator:
     def __init__(self, output_dir: Path, version: str):
         self.output_dir = output_dir
         self.version = version
-        self.version_dir = output_dir / "versions" / version
-        self.version_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def generate(
         self,
@@ -390,20 +389,20 @@ class WikiGenerator:
             packets = packets_by_category[category]
             desc = category_descriptions.get(category, '')
             display_name = category.replace('_', '').title()
-            lines.append(f"- [{display_name}]({category}) ({len(packets)} packets) - {desc}")
+            lines.append(f"- [{display_name}]({self._page_name(category)}) ({len(packets)} packets) - {desc}")
 
         lines.extend([
             f"",
             f"## Reference",
             f"",
-            f"- [Enum Types](Enums)",
-            f"- [Data Types](Data-Types)",
+            f"- [Enum Types]({self._page_name('Enums')})",
+            f"- [Data Types]({self._page_name('Data-Types')})",
             f"",
             f"---",
-            f"[All Versions](../Home)",
+            f"[All Versions](Home)",
         ])
 
-        self._write_page("Home", lines)
+        self._write_page(self._page_name('Home'), lines)
 
     def _generate_category_page(
         self,
@@ -443,10 +442,10 @@ class WikiGenerator:
 
         lines.extend([
             f"---",
-            f"[Back to Home](Home)",
+            f"[Back to Home]({self._page_name('Home')})",
         ])
 
-        self._write_page(category, lines)
+        self._write_page(self._page_name(category), lines)
 
     def _generate_packet_section(
         self,
@@ -546,10 +545,10 @@ class WikiGenerator:
 
         lines.extend([
             f"---",
-            f"[Back to Home](Home)",
+            f"[Back to Home]({self._page_name('Home')})",
         ])
 
-        self._write_page("Enums", lines)
+        self._write_page(self._page_name('Enums'), lines)
 
     def _generate_data_types_page(self, data_classes: dict[str, PacketInfo]):
         """Generate the data types documentation page."""
@@ -596,46 +595,47 @@ class WikiGenerator:
 
         lines.extend([
             f"---",
-            f"[Back to Home](Home)",
+            f"[Back to Home]({self._page_name('Home')})",
         ])
 
-        self._write_page("Data-Types", lines)
+        self._write_page(self._page_name('Data-Types'), lines)
 
     def _generate_version_sidebar(self, packets_by_category: dict[str, list[PacketInfo]]):
         """Generate the sidebar for this version."""
         lines = [
             f"**Version {self.version}**",
             f"",
-            f"[Home](Home)",
+            f"[Home]({self._page_name('Home')})",
             f"",
             f"**Categories**",
         ]
 
         for category in sorted(packets_by_category.keys()):
             display_name = category.replace('_', '').title()
-            lines.append(f"- [{display_name}]({category})")
+            lines.append(f"- [{display_name}]({self._page_name(category)})")
 
         lines.extend([
             f"",
             f"**Reference**",
-            f"- [Enums](Enums)",
-            f"- [Data Types](Data-Types)",
+            f"- [Enums]({self._page_name('Enums')})",
+            f"- [Data Types]({self._page_name('Data-Types')})",
             f"",
             f"---",
-            f"[All Versions](../Home)",
+            f"[All Versions](Home)",
         ])
 
-        self._write_page("_Sidebar", lines)
+        self._write_page(self._page_name('_Sidebar'), lines)
 
     def _generate_root_home(self):
         """Generate the root home page with versions list."""
-        versions_dir = self.output_dir / "versions"
-        versions = []
-
-        if versions_dir.exists():
-            for version_path in sorted(versions_dir.iterdir(), reverse=True):
-                if version_path.is_dir():
-                    versions.append(version_path.name)
+        # Collect all version-specific home pages
+        versions = set()
+        for file in self.output_dir.glob('Version-*-Home.md'):
+            # Extract version from filename like "Version-1.0.0-Home.md"
+            parts = file.stem.split('-')
+            if len(parts) >= 3:
+                version = '-'.join(parts[1:-1])  # Everything between "Version" and "Home"
+                versions.add(version)
 
         lines = [
             f"# Hytale Protocol Documentation",
@@ -647,8 +647,9 @@ class WikiGenerator:
         ]
 
         if versions:
-            for ver in versions:
-                lines.append(f"- [{ver}](versions/{ver}/Home)")
+            for ver in sorted(versions, reverse=True):
+                page_name = f"Version-{ver}-Home"
+                lines.append(f"- [{ver}]({page_name})")
         else:
             lines.append("*No versions documented yet*")
 
@@ -664,13 +665,13 @@ class WikiGenerator:
 
     def _generate_root_sidebar(self):
         """Generate the root sidebar."""
-        versions_dir = self.output_dir / "versions"
-        versions = []
-
-        if versions_dir.exists():
-            for version_path in sorted(versions_dir.iterdir(), reverse=True):
-                if version_path.is_dir():
-                    versions.append(version_path.name)
+        # Collect all version-specific home pages
+        versions = set()
+        for file in self.output_dir.glob('Version-*-Home.md'):
+            parts = file.stem.split('-')
+            if len(parts) >= 3:
+                version = '-'.join(parts[1:-1])
+                versions.add(version)
 
         lines = [
             f"**[Home](Home)**",
@@ -678,22 +679,28 @@ class WikiGenerator:
             f"**Versions**",
         ]
 
-        for ver in versions[:10]:  # Show latest 10
-            lines.append(f"- [{ver}](versions/{ver}/Home)")
+        sorted_versions = sorted(versions, reverse=True)
+        for ver in sorted_versions[:10]:  # Show latest 10
+            page_name = f"Version-{ver}-Home"
+            lines.append(f"- [{ver}]({page_name})")
 
-        if len(versions) > 10:
-            lines.append(f"- *...and {len(versions) - 10} more*")
+        if len(sorted_versions) > 10:
+            lines.append(f"- *...and {len(sorted_versions) - 10} more*")
 
         root_sidebar = self.output_dir / "_Sidebar.md"
         root_sidebar.write_text('\n'.join(lines), encoding='utf-8')
         print(f"Generated: _Sidebar.md (root)")
 
     def _write_page(self, name: str, lines: list[str]):
-        """Write a wiki page to the version directory."""
-        file_path = self.version_dir / f"{name}.md"
+        """Write a wiki page to the output directory."""
+        file_path = self.output_dir / f"{name}.md"
         content = '\n'.join(lines)
         file_path.write_text(content, encoding='utf-8')
-        print(f"Generated: versions/{self.version}/{name}.md")
+        print(f"Generated: {name}.md")
+
+    def _page_name(self, page: str) -> str:
+        """Generate version-prefixed page name."""
+        return f"Version-{self.version}-{page}"
 
     def _format_size(self, size: int) -> str:
         """Format byte size for display."""
@@ -718,9 +725,9 @@ class WikiGenerator:
         suffix = '[]' if is_array else ''
 
         if base_type in enums:
-            return f"[{base_type}](Enums#{base_type.lower()}){suffix}"
+            return f"[{base_type}]({self._page_name('Enums')}#{base_type.lower()}){suffix}"
         elif base_type in data_classes:
-            return f"[{base_type}](Data-Types#{base_type.lower()}){suffix}"
+            return f"[{base_type}]({self._page_name('Data-Types')}#{base_type.lower()}){suffix}"
         else:
             return f"`{java_type}`"
 
@@ -828,7 +835,7 @@ def main():
 
     # Generate JSON if requested
     if args.json:
-        json_path = generator.version_dir / 'packets.json'
+        json_path = args.output_dir / f'Version-{args.version}-packets.json'
         generate_json_summary(packets_by_category, enums, json_path, args.version)
 
     print(f"\nWiki generation complete!")

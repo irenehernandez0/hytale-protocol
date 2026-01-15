@@ -172,7 +172,6 @@ jobs:
         run: |
           version="${{ inputs.version }}"
           repo="${{ github.repository }}"
-          wiki_url="https://github.com/${repo}.wiki.git"
 
           echo "Publishing wiki for version: $version"
 
@@ -192,47 +191,11 @@ jobs:
             git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${repo}.wiki.git"
           fi
 
-          # Create version directory structure
-          version_dir="versions/${version}"
-          mkdir -p "$version_dir"
+          # Copy all wiki markdown files (flat structure)
+          cp -f ../wiki/*.md ./
 
-          # Copy wiki files to version directory
-          cp -r ../wiki/* "$version_dir/"
-
-          # Also copy to root for latest version (overwrite existing)
-          cp -r ../wiki/* ./
-
-          # Create a versions index page
-          cat > "Versions.md" << 'EOF'
-          # Protocol Versions
-
-          This wiki contains documentation for multiple versions of the Hytale protocol.
-
-          ## Available Versions
-
-          EOF
-
-          # List all version directories
-          if [ -d "versions" ]; then
-            for dir in versions/*/; do
-              if [ -d "$dir" ]; then
-                ver=$(basename "$dir")
-                echo "- [${ver}](versions/${ver}/Home)" >> "Versions.md"
-              fi
-            done
-          fi
-
-          echo "" >> "Versions.md"
-          echo "---" >> "Versions.md"
-          echo "*The root wiki pages always reflect the latest version.*" >> "Versions.md"
-
-          # Update sidebar to include versions link
-          if [ -f "_Sidebar.md" ]; then
-            if ! grep -q "Versions" "_Sidebar.md"; then
-              echo "" >> "_Sidebar.md"
-              echo "**[All Versions](Versions)**" >> "_Sidebar.md"
-            fi
-          fi
+          echo "Copied wiki files:"
+          ls -la *.md
 
           # Commit and push
           git add -A
