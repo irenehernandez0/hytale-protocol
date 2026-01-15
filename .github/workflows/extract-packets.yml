@@ -1,0 +1,162 @@
+name: Extract Hytale Packets
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Server version (e.g., 1.0.0, beta-1, 2024.01.15)'
+        required: true
+        type: string
+      jar_url:
+        description: 'Direct download URL for the server JAR (optional - leave empty to use uploaded artifact)'
+        required: false
+        type: string
+      artifact_run_id:
+        description: 'Run ID of the workflow that uploaded the JAR artifact (optional)'
+        required: false
+        type: string
+
+env:
+  VINEFLOWER_VERSION: '1.10.1'
+
+jobs:
+  extract-and-decompile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Download JAR from URL
+        if: inputs.jar_url != ''
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "./server-jar" -Force | Out-Null
+          $jarPath = "./server-jar/HytaleServer.jar"
+          Write-Host "Downloading JAR from: ${{ inputs.jar_url }}"
+          Invoke-WebRequest -Uri "${{ inputs.jar_url }}" -OutFile $jarPath -UseBasicParsing
+          Write-Host "JAR downloaded successfully"
+
+      - name: Download JAR from artifact
+        if: inputs.jar_url == '' && inputs.artifact_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: hytale-server-jar
+          path: ./server-jar
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.artifact_run_id }}
+
+      - name: Verify JAR file
+        id: check-jar
+        shell: pwsh
+        run: |
+          $jarFiles = Get-ChildItem -Path "./server-jar" -Filter "*.jar" -ErrorAction SilentlyContinue
+          if ($null -eq $jarFiles -or $jarFiles.Count -eq 0) {
+            Write-Host "::error::No JAR file found. Please provide either:"
+            Write-Host "::error::  - A direct download URL in 'jar_url'"
+            Write-Host "::error::  - An artifact run ID in 'artifact_run_id'"
+            exit 1
+          }
+          $jarPath = $jarFiles[0].FullName
+          Write-Host "Found JAR: $jarPath"
+          "jar_path=$jarPath" >> $env:GITHUB_OUTPUT
+
+      - name: Download Vineflower
+        shell: pwsh
+        run: |
+          $url = "https://github.com/Vineflower/vineflower/releases/download/${{ env.VINEFLOWER_VERSION }}/vineflower-${{ env.VINEFLOWER_VERSION }}.jar"
+          Write-Host "Downloading Vineflower from: $url"
+          Invoke-WebRequest -Uri $url -OutFile "vineflower.jar" -UseBasicParsing
+          Write-Host "Vineflower downloaded successfully"
+
+      - name: Extract and decompile packets
+        shell: pwsh
+        run: |
+          & ./scripts/Extract-Packets.ps1 `
+            -JarPath "${{ steps.check-jar.outputs.jar_path }}" `
+            -OutputPath "./packets" `
+            -VineflowerPath "./vineflower.jar"
+
+      - name: Check for changes
+        id: changes
+        shell: pwsh
+        run: |
+          git add -A
+          $status = git status --porcelain
+          if ($status) {
+            Write-Host "Changes detected:"
+            Write-Host $status
+            "has_changes=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No changes detected"
+            "has_changes=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Create version branch and commit
+        if: steps.changes.outputs.has_changes == 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $branchName = "version/$version"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check if branch exists on remote
+          $branchExists = git ls-remote --heads origin $branchName 2>$null
+
+          if ($branchExists) {
+            Write-Host "Branch $branchName already exists, checking out and updating..."
+            git fetch origin $branchName
+            git checkout -B $branchName origin/$branchName
+            git add -A
+            git commit -m "Update packets for version $version" --allow-empty
+          } else {
+            Write-Host "Creating new branch: $branchName"
+            git checkout -b $branchName
+            git add -A
+            git commit -m "Extract packets for version $version"
+          }
+
+          # Push branch
+          git push -u origin $branchName --force-with-lease
+
+          Write-Host "::notice::Successfully pushed to branch: $branchName"
+
+      - name: Create summary
+        shell: pwsh
+        run: |
+          $packetDirs = Get-ChildItem -Path "./packets" -Directory -ErrorAction SilentlyContinue
+          $totalFiles = (Get-ChildItem -Path "./packets" -Filter "*.java" -Recurse -ErrorAction SilentlyContinue).Count
+
+          $summary = @"
+          ## Packet Extraction Summary
+
+          **Version:** ``${{ inputs.version }}``
+          **Branch:** ``version/${{ inputs.version }}``
+          **Total Java Files:** $totalFiles
+
+          ### Package Breakdown
+
+          | Package | Files |
+          |---------|-------|
+          "@
+
+          foreach ($dir in $packetDirs) {
+            $count = (Get-ChildItem -Path $dir.FullName -Filter "*.java" -Recurse).Count
+            $summary += "`n| ``$($dir.Name)`` | $count |"
+          }
+
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
