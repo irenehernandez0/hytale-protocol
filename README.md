@@ -1,63 +1,80 @@
-# hytale-packets
+# Hytale Protocol Documentation
 
-Automatic documentation of the network protocol used in different versions of Hytale servers.
+[![Extract Hytale Packets](https://github.com/soksx/hytale-protocol/actions/workflows/extract-packets.yml/badge.svg)](https://github.com/soksx/hytale-protocol/actions/workflows/extract-packets.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## How It Works
+**Comprehensive, version-tracked documentation of Hytale's network protocol** — automatically extracted and decompiled from official server builds.
 
-This repository automatically extracts and decompiles the full protocol package from Hytale server JAR files using GitHub Actions. Each server version gets its own branch with the decompiled Java source code.
+> **[Browse the Protocol Wiki →](../../wiki)**
 
-The wiki documentation focuses on **packets** (the actual network messages), but includes links to related **enums** and **data classes** from the broader protocol package for complete context.
+## What is This?
 
-### Package Structure
+This project provides complete documentation of the **QUIC/UDP network protocol** used by [Hytale](https://hytale.com) game servers. It automates the extraction, decompilation, and documentation of all network packets, enums, and data structures from server JAR files.
 
-The full `com.hypixel.hytale.protocol` package is extracted, with packets located in the `packets` subpackage:
+### Key Features
 
-| Package | Description |
-|---------|-------------|
-| `packets/auth` | Authentication and authorization packets |
-| `packets/connection` | Connection management (connect, disconnect, ping/pong) |
-| `packets/entities` | Entity updates, spawning, animations |
-| `packets/interaction` | Player-entity interactions |
-| `packets/inventory` | Inventory management |
-| `packets/player` | Player-specific packets |
-| `packets/world` | World state and updates |
-| `packets/worldmap` | World map data |
-| ... | And more packet categories |
+- **Automated Extraction** — GitHub Actions workflow extracts protocol from any server version
+- **Version Tracking** — Each server version gets its own git branch with full source code
+- **Wiki Documentation** — Human-readable docs with packet IDs, fields, types, and constraints
+- **Machine-Readable Output** — JSON summaries for tool integration and analysis
+- **Cross-Referenced Types** — Links between packets, enums, and data classes
 
-Additional protocol entities (enums, data classes) are also extracted and documented to provide complete type references.
+## Protocol Overview
 
-## Usage
+The documented `com.hypixel.hytale.protocol` package includes:
 
-### Extracting Packets from a New Server Version
+| Category | Description |
+|----------|-------------|
+| `packets/auth` | Authentication, authorization, and session management |
+| `packets/connection` | Connection lifecycle (connect, disconnect, ping/pong, keepalive) |
+| `packets/entities` | Entity spawning, updates, animations, and state sync |
+| `packets/interaction` | Player-entity and player-world interactions |
+| `packets/inventory` | Inventory slots, items, and container management |
+| `packets/player` | Player movement, actions, and state updates |
+| `packets/world` | Chunk data, block updates, and world state |
+| `packets/worldmap` | Minimap and world map data |
+| `packets/camera` | Camera positioning and cinematic controls |
+| `packets/interface_` | UI/HUD updates and client interface packets |
+| `packets/window` | GUI windows and menu management |
+| *...and more* | Additional categories for assets, builder tools, machinima, etc. |
 
-1. **Go to Actions** → **Upload Server JAR**
+Each packet is documented with:
+- **Packet ID** (decimal and hexadecimal)
+- **Compression flag** and block sizes
+- **Field definitions** with types and constraints
+- **Related enums and data structures**
+
+## Quick Start
+
+### Browse Documentation
+
+Visit the **[Wiki](../../wiki)** to browse protocol documentation organized by version and packet category.
+
+### Extract a New Server Version
+
+1. Go to **Actions** → **[Upload Server JAR](../../actions/workflows/upload-jar.yml)**
 2. Enter the version number (e.g., `1.0.0`, `beta-1`)
-3. A draft release will be created - upload your JAR file there
-4. **Go to Actions** → **Extract Hytale Packets**
-5. Enter:
-   - **Version**: Same version number
-   - **JAR URL**: `https://github.com/<owner>/<repo>/releases/download/jar-<version>/HytaleServer.jar`
+3. Upload your server JAR to the created draft release
+4. Go to **Actions** → **[Extract Hytale Packets](../../actions/workflows/extract-packets.yml)**
+5. Enter the version and JAR URL
 
-Alternatively, provide any direct download URL for the JAR file.
+The workflow will automatically:
+- Extract and decompile the protocol package
+- Generate wiki documentation
+- Create a version branch (e.g., `version/1.0.0`)
+- Publish to the wiki
 
-### Viewing Extracted Protocol
+### Browse Source Code
 
-Each version has its own branch:
-- `version/1.0.0`
-- `version/beta-1`
-- etc.
+Each server version has a dedicated branch with decompiled Java sources:
 
-Browse the `protocol/` directory to see decompiled sources:
-- `protocol/packets/` - Network packet definitions
-- `protocol/*/` - Related enums, data classes, and utilities
+```
+version/1.0.0
+version/beta-1
+...
+```
 
-### Wiki Documentation
-
-The generated wiki documentation is published to the [repository wiki](../../wiki) and includes:
-- **Packet documentation** with field types, sizes, and constraints
-- **Enum types** with value tables
-- **Data types** with field documentation
-- **Cross-references** between packets and their related types
+Browse `protocol/packets/` for network packet definitions and `protocol/*/` for related types.
 
 ## Local Development
 
@@ -98,13 +115,66 @@ python ./scripts/generate_wiki.py --protocol-dir "./protocol" --output-dir "./wi
 | `--version` | No | `unknown` | Version string for documentation |
 | `--json` | No | - | Also generate JSON summary |
 
-## Technical Details
+## How It Works
 
-- **Decompiler**: [Vineflower](https://github.com/Vineflower/vineflower) (modern Fernflower fork)
-- **Target Package**: `com/hypixel/hytale/protocol` (full package)
-- **Documentation Focus**: Packets with links to related entities
-- **Output Format**: Java source files organized by subpackage + Markdown wiki
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Server JAR     │────▶│  Extract-Packets │────▶│  Decompiled     │
+│  (HytaleServer) │     │  (PowerShell)    │     │  Java Sources   │
+└─────────────────┘     └──────────────────┘     └────────┬────────┘
+                                                          │
+                        ┌──────────────────┐              │
+                        │  generate_wiki   │◀─────────────┘
+                        │  (Python)        │
+                        └────────┬─────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+        ┌──────────┐      ┌──────────┐       ┌──────────┐
+        │  Wiki    │      │  JSON    │       │  Version │
+        │  Pages   │      │  Summary │       │  Branch  │
+        └──────────┘      └──────────┘       └──────────┘
+```
+
+### Technical Stack
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Extraction | PowerShell 7+ | Cross-platform JAR extraction and orchestration |
+| Decompilation | [Vineflower](https://github.com/Vineflower/vineflower) | Modern Fernflower fork for Java bytecode decompilation |
+| Documentation | Python 3.11+ | Parse Java sources and generate Markdown/JSON |
+| Automation | GitHub Actions | CI/CD pipeline for extraction and publishing |
+| Runtime | Java 21+ | Required for Vineflower decompiler |
+
+## Use Cases
+
+- **Protocol Analysis** — Understand how Hytale client-server communication works
+- **Tool Development** — Build packet sniffers, proxies, or analysis tools
+- **Mod Development** — Reference for server-side mod compatibility
+- **Research** — Study modern game networking patterns
+- **Version Comparison** — Track protocol changes across server updates
+
+## Contributing
+
+Contributions are welcome! Areas where help is appreciated:
+
+- Improving packet documentation accuracy
+- Adding protocol analysis insights
+- Enhancing the wiki generation scripts
+- Supporting additional output formats
+
+## Related Resources
+
+- [Hytale Official](https://hytale.com) — Official game website
+- [Hytale Community Hub](https://hytale.com/news) — News and updates
+- [Vineflower](https://github.com/Vineflower/vineflower) — Java decompiler used by this project
 
 ## License
 
-This repository contains decompiled code for documentation purposes only.
+This repository is provided for **educational and documentation purposes only**. The decompiled protocol code remains the intellectual property of Hypixel Studios.
+
+---
+
+<p align="center">
+  <sub>Maintained by the Hytale community for research and documentation purposes.</sub>
+</p>
