@@ -85,12 +85,12 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile "vineflower.jar" -UseBasicParsing
           Write-Host "Vineflower downloaded successfully"
 
-      - name: Extract and decompile packets
+      - name: Extract and decompile protocol
         shell: pwsh
         run: |
           & ./scripts/Extract-Packets.ps1 `
             -JarPath "${{ steps.check-jar.outputs.jar_path }}" `
-            -OutputPath "./packets" `
+            -OutputPath "./protocol" `
             -VineflowerPath "./vineflower.jar"
 
       - name: Check for changes
@@ -123,9 +123,9 @@ jobs:
           # Create wiki directory
           New-Item -ItemType Directory -Path "./wiki" -Force | Out-Null
 
-          # Run the wiki generator
+          # Run the wiki generator (parses full protocol, documents packets with links to entities)
           python ./scripts/generate_wiki.py `
-            --packets-dir "./packets" `
+            --protocol-dir "./protocol" `
             --output-dir "./wiki" `
             --version "$version" `
             --json
@@ -237,25 +237,27 @@ jobs:
       - name: Create summary
         shell: pwsh
         run: |
-          $packetDirs = Get-ChildItem -Path "./packets" -Directory -ErrorAction SilentlyContinue
-          $totalFiles = (Get-ChildItem -Path "./packets" -Filter "*.java" -Recurse -ErrorAction SilentlyContinue).Count
+          $protocolDirs = Get-ChildItem -Path "./protocol" -Directory -ErrorAction SilentlyContinue
+          $totalFiles = (Get-ChildItem -Path "./protocol" -Filter "*.java" -Recurse -ErrorAction SilentlyContinue).Count
+          $packetFiles = (Get-ChildItem -Path "./protocol/packets" -Filter "*.java" -Recurse -ErrorAction SilentlyContinue).Count
           $wikiFiles = (Get-ChildItem -Path "./wiki" -Filter "*.md" -ErrorAction SilentlyContinue).Count
 
           $summary = @"
-          ## Packet Extraction Summary
+          ## Protocol Extraction Summary
 
           **Version:** ``${{ inputs.version }}``
           **Branch:** ``version/${{ inputs.version }}``
-          **Total Java Files:** $totalFiles
+          **Total Protocol Files:** $totalFiles
+          **Packet Files:** $packetFiles
           **Wiki Pages Generated:** $wikiFiles
 
-          ### Package Breakdown
+          ### Protocol Package Breakdown
 
           | Package | Files |
           |---------|-------|
           "@
 
-          foreach ($dir in $packetDirs) {
+          foreach ($dir in $protocolDirs) {
             $count = (Get-ChildItem -Path $dir.FullName -Filter "*.java" -Recurse).Count
             $summary += "`n| ``$($dir.Name)`` | $count |"
           }

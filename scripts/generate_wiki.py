@@ -2,8 +2,11 @@
 """
 Hytale Packet Documentation Generator
 
-Parses decompiled Java packet files using regex and generates Markdown
+Parses decompiled Java protocol files using regex and generates Markdown
 documentation for GitHub Wiki pages organized by version and category.
+
+The documentation focuses on packets (from protocol/packets/) but includes
+links to related entities (enums, data classes) from the broader protocol package.
 """
 
 import re
@@ -28,6 +31,7 @@ class EnumInfo:
     name: str
     package: str
     category: str
+    source_path: str = ""  # Relative path within protocol package
     values: list[EnumValue] = field(default_factory=list)
 
 
@@ -71,6 +75,17 @@ class FieldInfo:
 
 
 @dataclass
+class DataClassInfo:
+    """Represents a protocol data class (non-packet, non-enum)."""
+    name: str
+    package: str
+    category: str
+    source_path: str = ""  # Relative path within protocol package
+    fields: list[FieldInfo] = field(default_factory=list)
+    imports: list[str] = field(default_factory=list)
+
+
+@dataclass
 class PacketInfo:
     """Represents a parsed packet class."""
     name: str
@@ -96,8 +111,13 @@ class PacketInfo:
         return "N/A"
 
 
-class JavaPacketParser:
-    """Parses Java packet source files using regex patterns."""
+class JavaProtocolParser:
+    """Parses Java protocol source files using regex patterns.
+
+    Parses the full protocol package but distinguishes between:
+    - Packets (from protocol/packets/): fully documented
+    - Protocol entities (enums, data classes from other protocol dirs): linked from packet docs
+    """
 
     # Regex patterns for parsing
     PACKAGE_PATTERN = re.compile(r'package\s+([\w.]+);')
@@ -125,33 +145,48 @@ class JavaPacketParser:
     STRING_MAX_LENGTH_PATTERN = re.compile(r'stringTooLong\s*\(\s*"(\w+)"\s*,\s*\w+\s*,\s*(\d+)\s*\)')
     ARRAY_MAX_LENGTH_PATTERN = re.compile(r'arrayTooLong\s*\(\s*"(\w+)"\s*,\s*\w+\s*,\s*(\d+)\s*\)')
 
-    def __init__(self, packets_dir: Path):
-        self.packets_dir = packets_dir
+    def __init__(self, protocol_dir: Path):
+        self.protocol_dir = protocol_dir
+        self.packets_dir = protocol_dir / "packets"
         self.enums: dict[str, EnumInfo] = {}
         self.packets: dict[str, PacketInfo] = {}
-        self.data_classes: dict[str, PacketInfo] = {}
+        self.data_classes: dict[str, DataClassInfo] = {}
 
-    def parse_all(self) -> tuple[dict[str, list[PacketInfo]], dict[str, EnumInfo], dict[str, PacketInfo]]:
-        """Parse all Java files and return categorized results."""
+    def parse_all(self) -> tuple[dict[str, list[PacketInfo]], dict[str, EnumInfo], dict[str, DataClassInfo]]:
+        """Parse all Java files and return categorized results.
+
+        Returns:
+            - packets_by_category: Packets from protocol/packets/ organized by category
+            - enums: All enums from the full protocol package
+            - data_classes: All data classes from the full protocol package
+        """
         packets_by_category: dict[str, list[PacketInfo]] = defaultdict(list)
 
-        for category_dir in self.packets_dir.iterdir():
-            if not category_dir.is_dir():
-                continue
+        # First, parse the full protocol package for enums and data classes
+        self._parse_protocol_entities()
 
-            category = category_dir.name
+        # Then parse packets from protocol/packets/
+        if self.packets_dir.exists():
+            for category_dir in self.packets_dir.iterdir():
+                if not category_dir.is_dir():
+                    continue
 
-            for java_file in category_dir.glob('*.java'):
-                result = self.parse_file(java_file, category)
-                if result:
-                    if result.is_enum:
-                        enum_info = self._extract_enum_info(result, java_file)
-                        self.enums[result.name] = enum_info
-                    elif result.packet_id is not None:
-                        packets_by_category[category].append(result)
-                        self.packets[result.name] = result
-                    else:
-                        self.data_classes[result.name] = result
+                category = category_dir.name
+
+                for java_file in category_dir.glob('*.java'):
+                    result = self._parse_packet_file(java_file, category)
+                    if result:
+                        if result.is_enum:
+                            # Packet-local enum - add to enums with packets category
+                            enum_info = self._extract_enum_info(result, java_file, f"packets/{category}")
+                            self.enums[result.name] = enum_info
+                        elif result.packet_id is not None:
+                            packets_by_category[category].append(result)
+                            self.packets[result.name] = result
+                        else:
+                            # Packet-local data class
+                            data_class = self._convert_to_data_class(result, f"packets/{category}")
+                            self.data_classes[result.name] = data_class
 
         # Sort packets by ID within each category
         for category in packets_by_category:
@@ -159,13 +194,131 @@ class JavaPacketParser:
 
         return dict(packets_by_category), self.enums, self.data_classes
 
-    def _extract_enum_info(self, packet_info: PacketInfo, java_file: Path) -> EnumInfo:
+    def _parse_protocol_entities(self):
+        """Parse enums and data classes from all protocol subdirectories (except packets)."""
+        for subdir in self.protocol_dir.iterdir():
+            if not subdir.is_dir():
+                # Handle root-level protocol files
+                if subdir.suffix == '.java':
+                    self._parse_entity_file(subdir, "")
+                continue
+
+            # Skip packets directory - handled separately
+            if subdir.name == "packets":
+                continue
+
+            rel_path = subdir.name
+            self._parse_entity_directory(subdir, rel_path)
+
+    def _parse_entity_directory(self, directory: Path, rel_path: str):
+        """Recursively parse a directory for enums and data classes."""
+        for item in directory.iterdir():
+            if item.is_dir():
+                self._parse_entity_directory(item, f"{rel_path}/{item.name}")
+            elif item.suffix == '.java':
+                self._parse_entity_file(item, rel_path)
+
+    def _parse_entity_file(self, java_file: Path, rel_path: str):
+        """Parse a single Java file for enum or data class."""
+        try:
+            content = java_file.read_text(encoding='utf-8')
+        except Exception as e:
+            print(f"Error reading {java_file}: {e}")
+            return
+
+        # Extract package
+        package = ""
+        package_match = self.PACKAGE_PATTERN.search(content)
+        if package_match:
+            package = package_match.group(1)
+
+        # Determine category from relative path
+        category = rel_path.split('/')[0] if rel_path else "root"
+
+        # Check if it's an enum
+        enum_match = self.ENUM_PATTERN.search(content)
+        if enum_match:
+            enum_name = enum_match.group(1)
+            enum_info = EnumInfo(
+                name=enum_name,
+                package=package,
+                category=category,
+                source_path=rel_path
+            )
+            # Extract enum values
+            start = enum_match.end()
+            enum_body_end = content.find(';', start)
+            if enum_body_end != -1:
+                enum_body = content[start:enum_body_end]
+                for match in self.ENUM_VALUE_PATTERN.finditer(enum_body):
+                    enum_info.values.append(EnumValue(
+                        name=match.group(1),
+                        value=int(match.group(2))
+                    ))
+            self.enums[enum_name] = enum_info
+            return
+
+        # Check if it's a data class (not a packet)
+        class_match = self.CLASS_PATTERN.search(content)
+        if class_match:
+            # It's a packet - skip (packets are only from packets/ directory)
+            return
+
+        data_class_match = self.DATA_CLASS_PATTERN.search(content)
+        if data_class_match:
+            class_name = data_class_match.group(1)
+            data_class = DataClassInfo(
+                name=class_name,
+                package=package,
+                category=category,
+                source_path=rel_path
+            )
+            # Extract imports
+            for match in self.IMPORT_PATTERN.finditer(content):
+                data_class.imports.append(match.group(1))
+            # Extract fields
+            self._extract_data_class_fields(content, data_class)
+            self.data_classes[class_name] = data_class
+
+    def _extract_data_class_fields(self, content: str, data_class: DataClassInfo):
+        """Extract field declarations from a data class."""
+        for match in self.FIELD_PATTERN.finditer(content):
+            annotation = match.group(1)
+            java_type = match.group(2)
+            name = match.group(3)
+            default_value = match.group(4)
+
+            # Skip static fields and common non-data fields
+            if name in ('VALUES', 'value'):
+                continue
+
+            fld = FieldInfo(
+                name=name,
+                java_type=java_type,
+                nullable=annotation and '@Nullable' in annotation,
+                default_value=default_value.strip() if default_value else None
+            )
+            data_class.fields.append(fld)
+
+    def _convert_to_data_class(self, packet_info: PacketInfo, rel_path: str) -> DataClassInfo:
+        """Convert a PacketInfo (without packet_id) to a DataClassInfo."""
+        return DataClassInfo(
+            name=packet_info.name,
+            package=packet_info.package,
+            category=packet_info.category,
+            source_path=rel_path,
+            fields=packet_info.fields,
+            imports=packet_info.imports
+        )
+
+    def _extract_enum_info(self, packet_info: PacketInfo, java_file: Path, rel_path: str) -> EnumInfo:
         """Extract enum values from an enum file."""
         content = java_file.read_text(encoding='utf-8')
         enum_info = EnumInfo(
             name=packet_info.name,
             package=packet_info.package,
-            category=packet_info.category
+            category=packet_info.category,
+            source_path=rel_path
         )
 
         # Find enum body
@@ -183,8 +336,8 @@ class JavaPacketParser:
 
         return enum_info
 
-    def parse_file(self, file_path: Path, category: str) -> Optional[PacketInfo]:
-        """Parse a single Java file using regex."""
+    def _parse_packet_file(self, file_path: Path, category: str) -> Optional[PacketInfo]:
+        """Parse a single Java packet file using regex."""
         try:
             content = file_path.read_text(encoding='utf-8')
         except Exception as e:
@@ -315,11 +468,11 @@ class WikiGenerator:
         self,
         packets_by_category: dict[str, list[PacketInfo]],
         enums: dict[str, EnumInfo],
-        data_classes: dict[str, PacketInfo]
+        data_classes: dict[str, DataClassInfo]
     ):
         """Generate all wiki pages."""
         # Generate version home page
-        self._generate_version_home(packets_by_category, enums)
+        self._generate_version_home(packets_by_category, enums, data_classes)
 
         # Generate category pages with packets
         for category, packets in packets_by_category.items():
@@ -329,7 +482,7 @@ class WikiGenerator:
         self._generate_enums_page(enums)
 
         # Generate data types page for this version
-        self._generate_data_types_page(data_classes)
+        self._generate_data_types_page(data_classes, enums)
 
         # Generate sidebar for this version
         self._generate_version_sidebar(packets_by_category)
@@ -343,7 +496,8 @@ class WikiGenerator:
     def _generate_version_home(
         self,
         packets_by_category: dict[str, list[PacketInfo]],
-        enums: dict[str, EnumInfo]
+        enums: dict[str, EnumInfo],
+        data_classes: dict[str, DataClassInfo]
     ):
         """Generate the version home page."""
         total_packets = sum(len(p) for p in packets_by_category.values())
@@ -360,6 +514,7 @@ class WikiGenerator:
             f"| Total Packets | {total_packets} |",
             f"| Categories | {len(packets_by_category)} |",
             f"| Enum Types | {len(enums)} |",
+            f"| Data Types | {len(data_classes)} |",
             f"",
             f"## Categories",
             f"",
@@ -409,7 +564,7 @@ class WikiGenerator:
         category: str,
         packets: list[PacketInfo],
         enums: dict[str, EnumInfo],
-        data_classes: dict[str, PacketInfo]
+        data_classes: dict[str, DataClassInfo]
     ):
         """Generate a category page with all packets inline."""
         display_name = category.replace('_', '').title()
@@ -451,7 +606,7 @@ class WikiGenerator:
         self,
         packet: PacketInfo,
         enums: dict[str, EnumInfo],
-        data_classes: dict[str, PacketInfo]
+        data_classes: dict[str, DataClassInfo]
     ) -> list[str]:
         """Generate documentation section for a single packet."""
         lines = [
@@ -514,10 +669,12 @@ class WikiGenerator:
             f"",
         ]
 
-        # Group enums by category
+        # Group enums by source path (category)
         enums_by_category: dict[str, list[EnumInfo]] = defaultdict(list)
         for enum in enums.values():
-            enums_by_category[enum.category].append(enum)
+            # Use source_path for grouping to show full protocol structure
+            group_key = enum.source_path.split('/')[0] if enum.source_path else enum.category
+            enums_by_category[group_key].append(enum)
 
         for category in sorted(enums_by_category.keys()):
             category_enums = sorted(enums_by_category[category], key=lambda e: e.name)
@@ -528,10 +685,15 @@ class WikiGenerator:
             ])
 
             for enum in category_enums:
+                # Show source path as subtitle if available
+                source_info = f" (`{enum.source_path}`)" if enum.source_path else ""
                 lines.extend([
                     f"### {enum.name}",
                     f"",
                 ])
+                if enum.source_path:
+                    lines.append(f"*Source: `protocol/{enum.source_path}`*")
+                    lines.append(f"")
                 if enum.values:
                     lines.extend([
                         f"| Value | Name |",
@@ -550,7 +712,7 @@ class WikiGenerator:
 
         self._write_page(self._page_name('Enums'), lines)
 
-    def _generate_data_types_page(self, data_classes: dict[str, PacketInfo]):
+    def _generate_data_types_page(self, data_classes: dict[str, DataClassInfo], enums: dict[str, EnumInfo]):
         """Generate the data types documentation page."""
         lines = [
             f"# Data Types",
@@ -561,10 +723,12 @@ class WikiGenerator:
             f"",
         ]
 
-        # Group by category
-        types_by_category: dict[str, list[PacketInfo]] = defaultdict(list)
+        # Group by source path (category)
+        types_by_category: dict[str, list[DataClassInfo]] = defaultdict(list)
         for dc in data_classes.values():
-            types_by_category[dc.category].append(dc)
+            # Use source_path for grouping to show full protocol structure
+            group_key = dc.source_path.split('/')[0] if dc.source_path else dc.category
+            types_by_category[group_key].append(dc)
 
         for category in sorted(types_by_category.keys()):
             category_types = sorted(types_by_category[category], key=lambda t: t.name)
@@ -579,6 +743,9 @@ class WikiGenerator:
                     f"### {dc.name}",
                     f"",
                 ])
+                if dc.source_path:
+                    lines.append(f"*Source: `protocol/{dc.source_path}`*")
+                    lines.append(f"")
 
                 if dc.fields:
                     lines.extend([
@@ -587,7 +754,8 @@ class WikiGenerator:
                     ])
                     for fld in dc.fields:
                         nullable = "Yes" if fld.nullable else "No"
-                        lines.append(f"| `{fld.name}` | `{fld.java_type}` | {nullable} |")
+                        type_str = self._format_type_link(fld.java_type, enums, data_classes)
+                        lines.append(f"| `{fld.name}` | {type_str} | {nullable} |")
                 else:
                     lines.append("*No fields documented*")
 
@@ -717,7 +885,7 @@ class WikiGenerator:
         self,
         java_type: str,
         enums: dict[str, EnumInfo],
-        data_classes: dict[str, PacketInfo]
+        data_classes: dict[str, DataClassInfo]
     ) -> str:
         """Format a type with links to enum/data class documentation."""
         base_type = java_type.replace('[]', '')
@@ -782,13 +950,13 @@ def generate_json_summary(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate wiki documentation from Hytale packet Java files'
+        description='Generate wiki documentation from Hytale protocol Java files'
     )
     parser.add_argument(
-        '--packets-dir',
+        '--protocol-dir',
         type=Path,
-        default=Path('./packets'),
-        help='Directory containing packet Java files'
+        default=Path('./protocol'),
+        help='Directory containing the full protocol package (with packets/ subdirectory)'
     )
     parser.add_argument(
         '--output-dir',
@@ -810,23 +978,28 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.packets_dir.exists():
-        print(f"Error: Packets directory not found: {args.packets_dir}")
+    if not args.protocol_dir.exists():
+        print(f"Error: Protocol directory not found: {args.protocol_dir}")
         return 1
 
-    print(f"Parsing packets from: {args.packets_dir}")
+    packets_dir = args.protocol_dir / "packets"
+    if not packets_dir.exists():
+        print(f"Error: Packets directory not found: {packets_dir}")
+        return 1
+
+    print(f"Parsing protocol from: {args.protocol_dir}")
     print(f"Output directory: {args.output_dir}")
     print(f"Version: {args.version}")
     print()
 
     # Parse all Java files
-    java_parser = JavaPacketParser(args.packets_dir)
-    packets_by_category, enums, data_classes = java_parser.parse_all()
+    protocol_parser = JavaProtocolParser(args.protocol_dir)
+    packets_by_category, enums, data_classes = protocol_parser.parse_all()
 
     total_packets = sum(len(p) for p in packets_by_category.values())
     print(f"\nFound {total_packets} packets in {len(packets_by_category)} categories")
-    print(f"Found {len(enums)} enum types")
-    print(f"Found {len(data_classes)} data classes")
+    print(f"Found {len(enums)} enum types (from full protocol package)")
+    print(f"Found {len(data_classes)} data classes (from full protocol package)")
     print()
 
     # Generate wiki pages

@@ -1,9 +1,10 @@
 <#
 .SYNOPSIS
-    Extracts and decompiles Hytale packet classes from a server JAR file.
+    Extracts and decompiles Hytale protocol classes from a server JAR file.
 
 .DESCRIPTION
-    This script extracts classes from the com.hypixel.hytale.protocol.packets package
+    This script extracts the full com.hypixel.hytale.protocol package
+    (including packets, entities, enums, and other protocol classes)
     and decompiles them using Vineflower decompiler.
 
 .PARAMETER JarPath
@@ -16,7 +17,7 @@
     Path to the Vineflower JAR file (will be downloaded if not present).
 
 .EXAMPLE
-    .\Extract-Packets.ps1 -JarPath "HytaleServer.jar" -OutputPath "packets"
+    .\Extract-Packets.ps1 -JarPath "HytaleServer.jar" -OutputPath "protocol"
 #>
 
 param(
@@ -24,7 +25,7 @@ param(
     [string]$JarPath,
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath = "packets",
+    [string]$OutputPath = "protocol",
 
     [Parameter(Mandatory = $false)]
     [string]$VineflowerPath = "vineflower.jar"
@@ -35,7 +36,7 @@ $ErrorActionPreference = "Stop"
 # Constants
 $VINEFLOWER_VERSION = "1.10.1"
 $VINEFLOWER_URL = "https://github.com/Vineflower/vineflower/releases/download/$VINEFLOWER_VERSION/vineflower-$VINEFLOWER_VERSION.jar"
-$PACKET_PACKAGE = "com/hypixel/hytale/protocol/packets"
+$PROTOCOL_PACKAGE = "com/hypixel/hytale/protocol"
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
@@ -78,13 +79,13 @@ function Get-Vineflower {
     }
 }
 
-function Extract-PacketClasses {
+function Extract-ProtocolClasses {
     param(
         [string]$JarPath,
         [string]$TempPath
     )
 
-    Write-Log "Extracting packet classes from JAR..."
+    Write-Log "Extracting protocol classes from JAR..."
 
     # Create temp directory
     if (Test-Path $TempPath) {
@@ -93,54 +94,54 @@ function Extract-PacketClasses {
 
     New-Item -ItemType Directory -Path $TempPath -Force | Out-Null
 
-    # Extract only packet classes using jar or unzip
+    # Extract full protocol package using jar or unzip
     $extractPath = Join-Path $TempPath "extracted"
     New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
 
     # Resolve JAR to absolute path
     $absoluteJarPath = (Resolve-Path $JarPath).Path
 
-    # Use unzip to extract only packet classes
+    # Use unzip to extract full protocol package
     if (Get-Command "unzip" -ErrorAction SilentlyContinue) {
-        & unzip -q $absoluteJarPath "$PACKET_PACKAGE/*" -d $extractPath
+        & unzip -q $absoluteJarPath "$PROTOCOL_PACKAGE/*" -d $extractPath
     }
     else {
-        # Fallback: extract all with Expand-Archive and keep only packets
+        # Fallback: extract all with Expand-Archive and keep only protocol
         $tempExtract = Join-Path $TempPath "full-extract"
         Expand-Archive -Path $absoluteJarPath -DestinationPath $tempExtract -Force
 
-        $sourcePackets = Join-Path $tempExtract $PACKET_PACKAGE
-        $destPackets = Join-Path $extractPath $PACKET_PACKAGE
+        $sourceProtocol = Join-Path $tempExtract $PROTOCOL_PACKAGE
+        $destProtocol = Join-Path $extractPath $PROTOCOL_PACKAGE
 
-        if (Test-Path $sourcePackets) {
-            $parentDir = Split-Path $destPackets -Parent
+        if (Test-Path $sourceProtocol) {
+            $parentDir = Split-Path $destProtocol -Parent
             New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
-            Copy-Item -Path $sourcePackets -Destination $destPackets -Recurse -Force
+            Copy-Item -Path $sourceProtocol -Destination $destProtocol -Recurse -Force
         }
 
         # Cleanup full extract
         Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $packetPath = Join-Path $extractPath $PACKET_PACKAGE
-    if (-not (Test-Path $packetPath)) {
-        throw "Packet classes not found in JAR at path: $PACKET_PACKAGE"
+    $protocolPath = Join-Path $extractPath $PROTOCOL_PACKAGE
+    if (-not (Test-Path $protocolPath)) {
+        throw "Protocol classes not found in JAR at path: $PROTOCOL_PACKAGE"
     }
 
     # Count extracted classes
-    $classCount = (Get-ChildItem -Path $packetPath -Filter "*.class" -Recurse).Count
+    $classCount = (Get-ChildItem -Path $protocolPath -Filter "*.class" -Recurse).Count
     Write-Log "Extracted $classCount class files" -Level "SUCCESS"
 
     return $extractPath
 }
 
-function New-PacketJar {
+function New-ProtocolJar {
     param(
         [string]$ExtractedPath,
         [string]$OutputJar
     )
 
-    Write-Log "Creating temporary JAR with packet classes only..."
+    Write-Log "Creating temporary JAR with protocol classes..."
 
     # Use Compress-Archive (cross-platform, no file locking issues)
     $comPath = Join-Path $ExtractedPath "com"
@@ -158,7 +159,7 @@ function New-PacketJar {
     Compress-Archive -Path $comPath -DestinationPath $tempZip -Force
     Rename-Item -Path $tempZip -NewName (Split-Path $OutputJar -Leaf) -Force
 
-    Write-Log "Packet JAR created: $OutputJar" -Level "SUCCESS"
+    Write-Log "Protocol JAR created: $OutputJar" -Level "SUCCESS"
 }
 
 function Invoke-Decompiler {
@@ -205,30 +206,30 @@ function Copy-DecompiledSources {
     }
     New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
 
-    # Find the decompiled packet directory
-    $decompiledPackets = Join-Path $SourcePath $PACKET_PACKAGE
+    # Find the decompiled protocol directory
+    $decompiledProtocol = Join-Path $SourcePath $PROTOCOL_PACKAGE
 
-    if (-not (Test-Path $decompiledPackets)) {
+    if (-not (Test-Path $decompiledProtocol)) {
         # Vineflower might output differently, search for it
-        $decompiledPackets = Get-ChildItem -Path $SourcePath -Directory -Recurse |
-            Where-Object { $_.FullName -like "*$($PACKET_PACKAGE.Replace('/', '\'))*" } |
+        $decompiledProtocol = Get-ChildItem -Path $SourcePath -Directory -Recurse |
+            Where-Object { $_.FullName -like "*$($PROTOCOL_PACKAGE.Replace('/', '\'))*" } |
             Select-Object -First 1 -ExpandProperty FullName
     }
 
-    if (-not $decompiledPackets -or -not (Test-Path $decompiledPackets)) {
-        throw "Could not find decompiled packet sources"
+    if (-not $decompiledProtocol -or -not (Test-Path $decompiledProtocol)) {
+        throw "Could not find decompiled protocol sources"
     }
 
-    # Copy each subdirectory (auth, entities, etc.) to destination
-    Get-ChildItem -Path $decompiledPackets -Directory | ForEach-Object {
+    # Copy each subdirectory (packets, entities, etc.) to destination
+    Get-ChildItem -Path $decompiledProtocol -Directory | ForEach-Object {
         $destSubDir = Join-Path $DestinationPath $_.Name
         Copy-Item -Path $_.FullName -Destination $destSubDir -Recurse -Force
         $fileCount = (Get-ChildItem -Path $destSubDir -Filter "*.java" -Recurse).Count
         Write-Log "  - $($_.Name): $fileCount files"
     }
 
-    # Copy any root-level packet files
-    Get-ChildItem -Path $decompiledPackets -File -Filter "*.java" | ForEach-Object {
+    # Copy any root-level protocol files
+    Get-ChildItem -Path $decompiledProtocol -File -Filter "*.java" | ForEach-Object {
         Copy-Item -Path $_.FullName -Destination $DestinationPath -Force
     }
 
@@ -237,7 +238,7 @@ function Copy-DecompiledSources {
 }
 
 function Main {
-    Write-Log "=== Hytale Packet Extractor ===" -Level "INFO"
+    Write-Log "=== Hytale Protocol Extractor ===" -Level "INFO"
     Write-Log "JAR Path: $JarPath"
     Write-Log "Output Path: $OutputPath"
 
@@ -261,16 +262,16 @@ function Main {
     Get-Vineflower -DestinationPath $VineflowerPath
 
     # Create temp directory (cross-platform compatible)
-    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "hytale-packets-$([System.Guid]::NewGuid().ToString('N').Substring(0, 8))"
-    $tempJar = Join-Path $tempDir "packets.jar"
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "hytale-protocol-$([System.Guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $tempJar = Join-Path $tempDir "protocol.jar"
     $tempDecompiled = Join-Path $tempDir "decompiled"
 
     try {
-        # Extract packet classes
-        $extractedPath = Extract-PacketClasses -JarPath $JarPath -TempPath $tempDir
+        # Extract protocol classes
+        $extractedPath = Extract-ProtocolClasses -JarPath $JarPath -TempPath $tempDir
 
-        # Create JAR with only packets
-        New-PacketJar -ExtractedPath $extractedPath -OutputJar $tempJar
+        # Create JAR with protocol classes
+        New-ProtocolJar -ExtractedPath $extractedPath -OutputJar $tempJar
 
         # Decompile
         New-Item -ItemType Directory -Path $tempDecompiled -Force | Out-Null
